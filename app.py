@@ -4,7 +4,6 @@ from ultralytics import YOLO
 MODEL_PATH = "best.pt"
 CONFIDENCE_THRESHOLD = 0.4
 CAMERA_INDEX = 0
-
 CLASS_COLORS = {
     "helmet": (0, 255, 0),
     "gloves": (255, 0, 0),
