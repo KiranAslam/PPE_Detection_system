@@ -16,7 +16,7 @@
       <span class="brand-mark"></span>
       <div>
         <div class="brand-title">SITE GUARD</div>
-        <div class="brand-sub">PPE Compliance Monitoring</div>
+        <div class="brand-sub">PPE Compliance Monitoring — {{ camera_name }}</div>
       </div>
     </div>
   </div>
@@ -29,31 +29,25 @@
   </div>
 </header>
 
+<div class="area-selector">
+  <span class="area-selector-label">Active Zone:</span>
+  {% for area_id, info in areas.items() %}
+  <button class="area-btn{% if area_id == active_area %} active{% endif %}" data-area="{{ area_id }}">{{ info.name }}</button>
+  {% endfor %}
+</div>
+
 <main class="layout">
 
-  <section class="panel feed-panel">
-    <div class="panel-header">
-      <span class="panel-title">{{ camera_name }}</span>
-      <span class="live-tag"><span class="live-dot"></span>LIVE</span>
-    </div>
-    <div class="feed-frame">
-      <div class="corner corner-tl"></div>
-      <div class="corner corner-tr"></div>
-      <div class="corner corner-bl"></div>
-      <div class="corner corner-br"></div>
-      <img src="{{ url_for('video_feed') }}" alt="Live camera feed" class="feed-img">
-    </div>
-  </section>
-
-  <section class="stats-column">
+  <section class="top-row">
     <div class="stat-card">
       <div class="stat-label">Persons Detected</div>
       <div class="stat-value" id="statPersons">0</div>
-      <div class="stat-foot">in current frame</div>
+      <div class="stat-foot" id="statAreaFoot">in current frame</div>
     </div>
-    <div class="panel">
+    <div class="panel ppe-status-panel">
       <div class="panel-header">
         <span class="panel-title">PPE Status</span>
+        <span class="log-count" id="areaNameTag">{{ areas[active_area].name }}</span>
       </div>
       <div class="alerts-row" id="alertsRow"></div>
     </div>
@@ -69,11 +63,11 @@
         <thead>
           <tr>
             <th>Timestamp</th>
-            <th>Camera</th>
-            <th>Violation Type</th>
-            <th>Description</th>
+            <th>Person ID</th>
+            <th>Area</th>
+            <th>Violation</th>
             <th>Severity</th>
-            <th>Assigned To</th>
+            <th>Photo</th>
           </tr>
         </thead>
         <tbody id="logBody">
