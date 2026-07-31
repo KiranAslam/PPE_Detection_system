@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PPE Compliance Monitor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-left">
+    <div class="brand">
+      <span class="brand-mark"></span>
+      <div>
+        <div class="brand-title">SITE GUARD</div>
+        <div class="brand-sub">PPE Compliance Monitoring</div>
+      </div>
+    </div>
+  </div>
+  <div class="topbar-right">
+    <div class="status-pill" id="connectionStatus">
+      <span class="status-dot" id="statusDot"></span>
+      <span id="statusText">CONNECTING</span>
+    </div>
+    <div class="clock" id="clock">--:--:--</div>
+  </div>
+</header>
+
+<main class="layout">
+
+  <section class="panel feed-panel">
+    <div class="panel-header">
+      <span class="panel-title">{{ camera_name }}</span>
+      <span class="live-tag"><span class="live-dot"></span>LIVE</span>
+    </div>
+    <div class="feed-frame">
+      <div class="corner corner-tl"></div>
+      <div class="corner corner-tr"></div>
+      <div class="corner corner-bl"></div>
+      <div class="corner corner-br"></div>
+      <img src="{{ url_for('video_feed') }}" alt="Live camera feed" class="feed-img">
+    </div>
+  </section>
+
+  <section class="stats-column">
+    <div class="stat-card">
+      <div class="stat-label">Persons Detected</div>
+      <div class="stat-value" id="statPersons">0</div>
+      <div class="stat-foot">in current frame</div>
+    </div>
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">PPE Status</span>
+      </div>
+      <div class="alerts-row" id="alertsRow"></div>
+    </div>
+  </section>
+
+  <section class="panel log-panel">
+    <div class="panel-header">
+      <span class="panel-title">Violation Log</span>
+      <span class="log-count" id="logCount">0 records</span>
+    </div>
+    <div class="table-wrap">
+      <table class="log-table">
+        <thead>
+          <tr>
+            <th>Timestamp</th>
+            <th>Camera</th>
+            <th>Violation Type</th>
+            <th>Description</th>
+            <th>Severity</th>
+            <th>Assigned To</th>
+          </tr>
+        </thead>
+        <tbody id="logBody">
+          <tr class="empty-row"><td colspan="6">No violations recorded yet — monitoring in progress</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+</main>
+
+<script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
