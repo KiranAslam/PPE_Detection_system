@@ -23,15 +23,13 @@ function updateConnectionStatus(status) {
   }
 }
 
-const PPE_ORDER = ["helmet", "vest", "goggles", "gloves"];
-
-function updateAlerts(ppeStatus) {
+function updateAlerts(ppeStatus, requiredItems) {
   const row = document.getElementById("alertsRow");
-  if (!ppeStatus) {
+  if (!ppeStatus || !requiredItems) {
     row.innerHTML = "";
     return;
   }
-  row.innerHTML = PPE_ORDER
+  row.innerHTML = requiredItems
     .filter((item) => ppeStatus[item] && ppeStatus[item] !== "unknown")
     .map((item) => {
       const status = ppeStatus[item];
@@ -42,14 +40,23 @@ function updateAlerts(ppeStatus) {
     .join("");
 }
 
+function updateAreaButtons(activeAreaId) {
+  document.querySelectorAll(".area-btn").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.area === activeAreaId);
+  });
+}
+
 async function fetchStats() {
   try {
     const res = await fetch("/api/stats");
     const data = await res.json();
 
     document.getElementById("statPersons").textContent = data.current_persons;
+    document.getElementById("statAreaFoot").textContent = `in ${data.active_area_name}`;
     document.getElementById("logCount").textContent = `${data.total_logs} records`;
-    updateAlerts(data.ppe_status);
+    document.getElementById("areaNameTag").textContent = data.active_area_name;
+    updateAlerts(data.ppe_status, data.required_items);
+    updateAreaButtons(data.active_area);
 
     updateConnectionStatus(data.camera_status);
   } catch (err) {
@@ -74,7 +81,7 @@ async function fetchLogs() {
 
     tbody.innerHTML = "";
     data.forEach((entry) => {
-      const key = `${entry.timestamp}-${entry.description}`;
+      const key = `${entry.timestamp}-${entry.person_id}-${entry.violation_type}`;
       const isNew = !knownLogTimestamps.has(key);
       knownLogTimestamps.add(key);
 
@@ -82,11 +89,11 @@ async function fetchLogs() {
       if (isNew) row.classList.add("new-row");
       row.innerHTML = `
         <td>${entry.timestamp}</td>
-        <td>${entry.camera}</td>
+        <td>${entry.person_id}</td>
+        <td>${entry.area}</td>
         <td>${entry.violation_type}</td>
-        <td>${entry.description}</td>
         <td>${severityChip(entry.severity)}</td>
-        <td>${entry.assigned_to}</td>
+        <td><a href="${entry.photo}" target="_blank"><img class="log-thumb" src="${entry.photo}" alt="Violation evidence"></a></td>
       `;
       tbody.appendChild(row);
     });
@@ -94,6 +101,24 @@ async function fetchLogs() {
     // silent — next poll will retry
   }
 }
+
+async function setActiveArea(areaId) {
+  try {
+    await fetch("/api/area", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ area: areaId }),
+    });
+    updateAreaButtons(areaId);
+    fetchStats();
+  } catch (err) {
+    // silent — UI will resync on next stats poll
+  }
+}
+
+document.querySelectorAll(".area-btn").forEach((btn) => {
+  btn.addEventListener("click", () => setActiveArea(btn.dataset.area));
+});
 
 setInterval(updateClock, 1000);
 setInterval(fetchStats, STATS_POLL_MS);
