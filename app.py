@@ -1,5 +1,7 @@
 import os
 import time
+import logging
+import statistics
 import threading
 from collections import deque
 from datetime import datetime
@@ -8,13 +10,23 @@ import cv2
 from flask import Flask, jsonify, render_template, request
 from ultralytics import YOLO
 
-MODEL_PATH = "best.pt"
-CAMERA_INDEX = 0
-CAMERA_NAME = "Camera 1 - Main Floor"
-CONFIDENCE_THRESHOLD = 0.4
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger("site_guard")
+
+MODEL_PATH = os.environ.get("MODEL_PATH", "best.pt")
+CAMERA_INDEX = int(os.environ.get("CAMERA_INDEX", 0))
+CAMERA_NAME = os.environ.get("CAMERA_NAME", "Camera 1 - Main Floor")
+CONFIDENCE_THRESHOLD = float(os.environ.get("CONFIDENCE_THRESHOLD", 0.4))
 CAPTURE_SETTLE_SECONDS = 5  # wait this long after a person first appears before checking/capturing them
 MAX_LOGS = 300
 ROLLING_WINDOW_SECONDS = 4
+
+
+SHOW_PREVIEW = os.environ.get("SHOW_PREVIEW", "1") == "1"
+
+# Camera reconnect tuning
+CAMERA_RECONNECT_RETRIES = 5
+CAMERA_RECONNECT_DELAY_SECONDS = 3
 
 # Person tracking tuning
 TRACK_GRACE_SECONDS = 3       # how long a person can vanish from a frame before losing their ID
@@ -53,8 +65,7 @@ ITEM_META = {
     "gloves": {"severity": "Medium", "description": "Worker detected without safety gloves"},
 }
 
-# Per-area PPE requirement checklist — only these items are checked while
-# that area is active.
+
 AREAS = {
     "area1": {"name": "Process / Refinery Unit", "required": ["helmet", "goggles", "gloves", "vest"]},
     "area2": {"name": "Tank Farm / Storage Yard", "required": ["helmet", "vest", "goggles"]},
@@ -68,10 +79,10 @@ app = Flask(__name__)
 state_lock = threading.Lock()
 active_area = DEFAULT_AREA
 
-# id -> {"bbox", "last_seen", "first_seen", "ppe_status", "saw_none", "logged"}
 person_tracks = {}
 frame_history = deque()
-logs = deque(maxlen=MAX_LOGS)
+logs = []
+next_person_id = 1  
 
 state = {
     "current_persons": 0,
@@ -112,11 +123,11 @@ def iou(box_a, box_b):
 
 
 def next_free_id():
-    """Lowest ID not currently in use by a live track."""
-    i = 1
-    while i in person_tracks:
-        i += 1
-    return i
+
+    global next_person_id
+    tid = next_person_id
+    next_person_id += 1
+    return tid
 
 
 def match_persons(person_boxes, now, required_items):
@@ -153,7 +164,7 @@ def match_persons(person_boxes, now, required_items):
             "first_seen": now,
             "ppe_status": {item: "unknown" for item in required_items},
             "saw_none": False,
-            "logged": False,
+            "logged_violations": set(),  # which item names / "none" have already produced a log entry
         }
         matched_ids.append(tid)
 
@@ -164,15 +175,24 @@ def match_persons(person_boxes, now, required_items):
     return matched_ids
 
 
-def assign_gear_to_person(gear_box):
-    """Return the track ID whose person box contains this gear box's center."""
+def assign_gear_to_person(gear_box, matched_ids):
+    
     cx = (gear_box[0] + gear_box[2]) / 2
     cy = (gear_box[1] + gear_box[3]) / 2
-    for tid, track in person_tracks.items():
+
+
+    best_tid, best_dist = None, None
+    for tid in matched_ids:
+        track = person_tracks.get(tid)
+        if not track:
+            continue
         x1, y1, x2, y2 = track["bbox"]
         if x1 <= cx <= x2 and y1 <= cy <= y2:
-            return tid
-    return None
+            pcx, pcy = (x1 + x2) / 2, (y1 + y2) / 2
+            dist = (pcx - cx) ** 2 + (pcy - cy) ** 2
+            if best_dist is None or dist < best_dist:
+                best_tid, best_dist = tid, dist
+    return best_tid
 
 
 def process_frame(frame):
@@ -206,7 +226,7 @@ def process_frame(frame):
         box_to_id = {person_tracks[tid]["bbox"]: tid for tid in matched_ids if tid in person_tracks}
 
         for cls_name, gbox in gear_detections:
-            tid = assign_gear_to_person(gbox)
+            tid = assign_gear_to_person(gbox, matched_ids)
             if tid is None or tid not in person_tracks:
                 continue
             status = person_tracks[tid]["ppe_status"]
@@ -231,26 +251,32 @@ def process_frame(frame):
                 if track["ppe_status"].get(item) == "missing":
                     aggregate_missing.add(item)
 
-        # ---- One-shot capture per person: at most one photo/log per track ----
+        # ---- Capture one photo/log per NEW violation type per person ----
+        # (not a single one-shot per person — otherwise once someone is
+        # logged for e.g. a missing helmet, a *later* missing vest on the
+        # same person would never get logged for the rest of their time on
+        # camera, which is a real safety gap.)
         for tid in matched_ids:
             track = person_tracks.get(tid)
-            if not track or track["logged"]:
+            if not track:
                 continue
             if now - track["first_seen"] < CAPTURE_SETTLE_SECONDS:
                 continue  # give detection a moment to stabilize after they appear
 
             if track.get("saw_none"):
-                pending_logs.append((tid, "None Detected (No PPE Worn)", "High"))
-                track["logged"] = True
+                if "none" not in track["logged_violations"]:
+                    pending_logs.append((tid, "None Detected (No PPE Worn)", "High"))
+                    track["logged_violations"].add("none")
                 continue
 
             missing_items = [item for item in required_items if track["ppe_status"].get(item) == "missing"]
-            if missing_items:
-                violation_text = ", ".join(item.capitalize() for item in missing_items) + " Missing"
-                severity = "High" if any(ITEM_META[i]["severity"] == "High" for i in missing_items) else "Medium"
+            new_violations = [item for item in missing_items if item not in track["logged_violations"]]
+            if new_violations:
+                violation_text = ", ".join(item.capitalize() for item in new_violations) + " Missing"
+                severity = "High" if any(ITEM_META[i]["severity"] == "High" for i in new_violations) else "Medium"
                 pending_logs.append((tid, violation_text, severity))
-                track["logged"] = True
-            # else: fully compliant so far — keep watching, don't mark logged yet
+                track["logged_violations"].update(new_violations)
+            # else: nothing new missing — keep watching
 
         persons_this_frame = len(person_boxes)
 
@@ -275,8 +301,13 @@ def process_frame(frame):
     new_log_entries = []
     for tid, violation_text, severity in pending_logs:
         photo_name = f"{current_area}_p{tid:02d}_{int(now)}.jpg"
-        cv2.imwrite(os.path.join(PHOTO_DIR, photo_name), frame)
-        photo_url = f"{PHOTO_URL_PREFIX}/{photo_name}"
+        photo_path = os.path.join(PHOTO_DIR, photo_name)
+        saved = cv2.imwrite(photo_path, frame)
+        if not saved:
+            logger.warning("Failed to write violation photo to %s", photo_path)
+            photo_url = None
+        else:
+            photo_url = f"{PHOTO_URL_PREFIX}/{photo_name}"
         new_log_entries.append(make_log_entry(current_area, tid, violation_text, severity, photo_url))
 
     # ---------- Publish state ----------
@@ -284,7 +315,10 @@ def process_frame(frame):
         frame_history.append((now, persons_this_frame))
         while frame_history and now - frame_history[0][0] > ROLLING_WINDOW_SECONDS:
             frame_history.popleft()
-        smoothed_persons = max(p for _, p in frame_history)
+        # median (not max) so a single noisy frame — e.g. a momentary double
+        # detection from occlusion or motion blur — doesn't spike the count
+        # for the entire rolling window.
+        smoothed_persons = round(statistics.median(p for _, p in frame_history))
 
         state["current_persons"] = smoothed_persons
         state["total_persons_seen"] += persons_this_frame
@@ -299,18 +333,37 @@ def process_frame(frame):
             state["ppe_status"] = {item: "unknown" for item in required_items}
 
         for entry in new_log_entries:
-            logs.appendleft(entry)
+            logs.insert(0, entry)
+        while len(logs) > MAX_LOGS:
+            dropped = logs.pop()  # oldest entry
+            if dropped.get("photo"):
+                dropped_path = dropped["photo"].replace(PHOTO_URL_PREFIX, PHOTO_DIR, 1)
+                try:
+                    if os.path.exists(dropped_path):
+                        os.remove(dropped_path)
+                except OSError as e:
+                    logger.warning("Failed to remove old violation photo %s: %s", dropped_path, e)
         state["total_logs"] = len(logs)
 
     return frame
 
 
-def camera_loop():
-    """Runs on the server only — opens the camera, processes frames, and shows
-    a local preview window. The dashboard never receives this video; it only
-    reads the stats/logs/photos this loop produces."""
+def open_camera():
     cap = cv2.VideoCapture(CAMERA_INDEX)
-    if not cap.isOpened():
+    return cap if cap.isOpened() else None
+
+
+def camera_loop():
+    """Runs on the server only — opens the camera, processes frames, and
+    (optionally) shows a local preview window. The dashboard never receives
+    this video; it only reads the stats/logs/photos this loop produces.
+
+    A single dropped frame no longer kills monitoring permanently — the loop
+    retries reconnecting the camera up to CAMERA_RECONNECT_RETRIES times
+    before giving up for good."""
+    cap = open_camera()
+    if cap is None:
+        logger.error("Could not open camera index %s", CAMERA_INDEX)
         with state_lock:
             state["camera_status"] = "offline"
         return
@@ -319,21 +372,43 @@ def camera_loop():
         state["camera_status"] = "live"
 
     window_name = "Site Guard - Server Preview (press q to close preview)"
+    reconnect_attempts = 0
 
     while True:
         ret, frame = cap.read()
         if not ret:
+            reconnect_attempts += 1
+            logger.warning(
+                "Camera read failed (attempt %d/%d) — reconnecting...",
+                reconnect_attempts, CAMERA_RECONNECT_RETRIES,
+            )
             with state_lock:
-                state["camera_status"] = "offline"
-            break
+                state["camera_status"] = "connecting"
 
+            if reconnect_attempts > CAMERA_RECONNECT_RETRIES:
+                logger.error("Camera unreachable after %d attempts — giving up.", CAMERA_RECONNECT_RETRIES)
+                break
+
+            cap.release()
+            time.sleep(CAMERA_RECONNECT_DELAY_SECONDS)
+            cap = open_camera()
+            if cap is None:
+                continue  # try again next loop iteration, up to the retry cap
+            with state_lock:
+                state["camera_status"] = "live"
+            continue
+
+        reconnect_attempts = 0  # reset after any successful read
         frame = process_frame(frame)
-        cv2.imshow(window_name, frame)
-        if cv2.waitKey(1) & 0xFF == ord("q"):
-            break
+
+        if SHOW_PREVIEW:
+            cv2.imshow(window_name, frame)
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
 
     cap.release()
-    cv2.destroyAllWindows()
+    if SHOW_PREVIEW:
+        cv2.destroyAllWindows()
     with state_lock:
         state["camera_status"] = "offline"
 
