@@ -60,12 +60,42 @@ async function fetchStats() {
 
     updateConnectionStatus(data.camera_status);
   } catch (err) {
+    console.warn("fetchStats failed:", err);
     updateConnectionStatus("offline");
   }
 }
 
-function severityChip(severity) {
-  return `<span class="severity-chip severity-${severity}">${severity}</span>`;
+function makeCell(text) {
+  const td = document.createElement("td");
+  td.textContent = text;
+  return td;
+}
+
+function makeSeverityCell(severity) {
+  const td = document.createElement("td");
+  const span = document.createElement("span");
+  span.className = `severity-chip severity-${severity}`;
+  span.textContent = severity;
+  td.appendChild(span);
+  return td;
+}
+
+function makePhotoCell(photoUrl) {
+  const td = document.createElement("td");
+  if (!photoUrl) {
+    td.textContent = "—";
+    return td;
+  }
+  const a = document.createElement("a");
+  a.href = photoUrl;
+  a.target = "_blank";
+  const img = document.createElement("img");
+  img.className = "log-thumb";
+  img.src = photoUrl;
+  img.alt = "Violation evidence";
+  a.appendChild(img);
+  td.appendChild(a);
+  return td;
 }
 
 async function fetchLogs() {
@@ -75,7 +105,14 @@ async function fetchLogs() {
     const tbody = document.getElementById("logBody");
 
     if (data.length === 0) {
-      tbody.innerHTML = '<tr class="empty-row"><td colspan="6">No violations recorded yet — monitoring in progress</td></tr>';
+      tbody.innerHTML = "";
+      const row = document.createElement("tr");
+      row.className = "empty-row";
+      const td = document.createElement("td");
+      td.colSpan = 6;
+      td.textContent = "No violations recorded yet — monitoring in progress";
+      row.appendChild(td);
+      tbody.appendChild(row);
       return;
     }
 
@@ -87,18 +124,16 @@ async function fetchLogs() {
 
       const row = document.createElement("tr");
       if (isNew) row.classList.add("new-row");
-      row.innerHTML = `
-        <td>${entry.timestamp}</td>
-        <td>${entry.person_id}</td>
-        <td>${entry.area}</td>
-        <td>${entry.violation_type}</td>
-        <td>${severityChip(entry.severity)}</td>
-        <td><a href="${entry.photo}" target="_blank"><img class="log-thumb" src="${entry.photo}" alt="Violation evidence"></a></td>
-      `;
+      row.appendChild(makeCell(entry.timestamp));
+      row.appendChild(makeCell(entry.person_id));
+      row.appendChild(makeCell(entry.area));
+      row.appendChild(makeCell(entry.violation_type));
+      row.appendChild(makeSeverityCell(entry.severity));
+      row.appendChild(makePhotoCell(entry.photo));
       tbody.appendChild(row);
     });
   } catch (err) {
-    // silent — next poll will retry
+    console.warn("fetchLogs failed, will retry on next poll:", err);
   }
 }
 
@@ -112,7 +147,7 @@ async function setActiveArea(areaId) {
     updateAreaButtons(areaId);
     fetchStats();
   } catch (err) {
-    // silent — UI will resync on next stats poll
+    console.warn("setActiveArea failed, UI will resync on next stats poll:", err);
   }
 }
 
